@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 import calendar
+import io
 import json
 import sqlite3
 import time
@@ -563,7 +564,7 @@ with tab3:
         st.markdown("##### 📝 填寫新食譜資訊")
         with st.form("add_recipe_form"):
             new_title = st.text_input("食譜名稱")
-            new_cat = st.selectbox("料理分類", ["家常菜", "湯品", "點心", "主食", "異國料理", "其他"])
+            new_cat = st.selectbox("料理分類", ["家常菜", "湯品", "點心", "主食", "異國料理", "other"])
             new_ing = st.text_area("所需食材（每行一項，格式：品名/數量/單位，例如：\n洋蔥/1/顆\n牛肉/200/克）")
             new_inst = st.text_area("作法步驟說明")
             
@@ -618,7 +619,7 @@ with tab3:
 with tab4:
     st.subheader(f"🍽️ 三餐與早餐規劃 ({selected_fridge_name})")
     
-    plan_tab_1, plan_tab_2, plan_tab_3 = st.tabs(["📝 每日規劃新增", "📅 每周規劃表", "🗓️ 每月規劃總覽"])
+    plan_tab_1, plan_tab_2, plan_tab_3 = st.tabs(["📝 每日規劃新增", "📅 每周規劃表", "🗓️ 每月規劃總覽與匯出"])
     
     con = get_db()
     cur = con.cursor()
@@ -627,7 +628,6 @@ with tab4:
     with plan_tab_1:
         st.info("在這裡您可以新增指定日期的早、中、晚餐。下方亦會提示目前冰箱內需優先消耗的食材！")
         
-        # 取得優先到期食材
         cur.execute("SELECT name, quantity, unit, expiry_date, location FROM foods WHERE fridge_id = ? AND quantity > 0 ORDER BY expiry_date ASC LIMIT 6", (current_fridge_id,))
         urgent_foods = cur.fetchall()
         
@@ -691,12 +691,11 @@ with tab4:
         else:
             st.info(f"📅 {selected_plan_date} 目前尚無餐點規劃，請透過上方表單新增。")
 
-    # --- 規劃子分頁 2：每周規劃表（特化早餐檢視選項） ---
+    # --- 規劃子分頁 2：每周規劃表 ---
     with plan_tab_2:
         st.markdown("##### 📅 週菜單與早餐總覽表")
         week_ref_date = st.date_input("選擇基準日期（系統將自動計算整週）", value=date.today(), key="week_ref_date")
         
-        # 計算當週的週一與週日
         start_of_week = week_ref_date - timedelta(days=week_ref_date.weekday())
         end_of_week = start_of_week + timedelta(days=6)
         
@@ -712,7 +711,6 @@ with tab4:
         """, (current_fridge_id, start_of_week.isoformat(), end_of_week.isoformat()))
         week_data = cur.fetchall()
         
-        # 整理一週資料
         week_dict = {}
         for i in range(7):
             d_str = (start_of_week + timedelta(days=i)).isoformat()
@@ -737,9 +735,9 @@ with tab4:
                 else:
                     st.caption("尚無規劃餐點")
 
-    # --- 規劃子分頁 3：每月規劃總覽月曆觀點 ---
+    # --- 規劃子分頁 3：每月規劃總覽與 Excel (CSV) 匯出 ---
     with plan_tab_3:
-        st.markdown("##### 🗓️ 月度三餐與早餐統計總覽")
+        st.markdown("##### 🗓️ 月度三餐與早餐統計總覽與匯出")
         
         col_m1, col_m2 = st.columns(2)
         with col_m1:
@@ -752,27 +750,46 @@ with tab4:
         m_end = date(sel_year, sel_month, last_day).isoformat()
         
         cur.execute("""
-            SELECT plan_date, meal_type, dish_name
+            SELECT plan_date, meal_type, dish_name, note
             FROM meal_plans
             WHERE fridge_id = ? AND plan_date BETWEEN ? AND ?
-            ORDER BY plan_date ASC
+            ORDER BY plan_date ASC, CASE meal_type WHEN '早餐' THEN 1 WHEN '午餐' THEN 2 ELSE 3 END
         """, (current_fridge_id, m_start, m_end))
         month_rows = cur.fetchall()
         
         if month_rows:
             st.success(f"📊 {sel_year} 年 {sel_month} 月份共有 **{len(month_rows)}** 筆餐點規劃")
             
-            # 統計該月早餐數量
             bf_count = sum(1 for r in month_rows if r['meal_type'] == '早餐')
             st.write(f"☀️ 其中早餐總計：**{bf_count}** 次")
             
-            # 按日期分類展示
+            # 準備 Excel (CSV) 匯出資料
+            csv_buffer = io.StringIO()
+            csv_buffer.write('\ufeff')  # 加上 BOM 避免 Excel 開啟中文亂碼
+            csv_buffer.write("日期,餐別,菜色內容,備註\n")
+            for r in month_rows:
+                d_val = r['plan_date']
+                m_val = r['meal_type']
+                dish_val = r['dish_name'].replace('"', '""')
+                note_val = (r['note'] or '').replace('"', '""')
+                csv_buffer.write(f'"{d_val}","{m_val}","{dish_val}","{note_val}"\n')
+            
+            st.download_button(
+                label="📥 下載此月份規劃 Excel (CSV 檔)",
+                data=csv_buffer.getvalue(),
+                file_name=f"meal_plans_{sel_year}_{sel_month:02d}.csv",
+                mime="text/csv",
+                type="primary"
+            )
+            
+            st.divider()
+            
             m_dict = {}
             for r in month_rows:
                 p_date = r['plan_date']
                 if p_date not in m_dict:
                     m_dict[p_date] = []
-                m_dict[p_date].append(f"【{r['meal_type']}】{r['dish_name']}")
+                m_dict[p_date].append(f"【{r['meal_type']}】{r['dish_name']}" + (f" ({r['note']})" if r['note'] else ""))
                 
             for d_key in sorted(m_dict.keys()):
                 st.markdown(f"**📌 {d_key}**")
