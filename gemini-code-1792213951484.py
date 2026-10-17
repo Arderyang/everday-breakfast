@@ -1,4 +1,5 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+import calendar
 import json
 import sqlite3
 import time
@@ -207,9 +208,9 @@ current_fridge_id = fridge_dict[selected_fridge_name]
 
 # --- 3. 標籤頁導覽（依權限動態調整） ---
 if st.session_state.role == "admin":
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📦 庫存", "📸 拍照AI", "🍳 食譜", "🍽️ 三餐規劃", "🛒 採買", "📋 取出紀錄", "📊 報表", "⚙️ 系統管理"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📦 庫存", "📸 拍照AI", "🍳 食譜", "🍽️ 三餐與早餐規劃", "🛒 採買", "📋 取出紀錄", "📊 報表", "⚙️ 系統管理"])
 else:
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📦 庫存", "📸 拍照AI", "🍳 食譜", "🍽️ 三餐規劃", "🛒 採買", "📋 取出紀錄", "📊 報表"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📦 庫存", "📸 拍照AI", "🍳 食譜", "🍽️ 三餐與早餐規劃", "🛒 採買", "📋 取出紀錄", "📊 報表"])
 
 # --- 標籤一：庫存管理 ---
 with tab1:
@@ -613,80 +614,173 @@ with tab3:
                 
     con.close()
 
-# --- 標籤四：每日三餐規劃 ---
+# --- 標籤四：每日、每周與每月三餐/早餐規劃 ---
 with tab4:
-    st.subheader(f"🍽️ 每日三餐規劃 ({selected_fridge_name})")
-    st.info("在這裡您可以規劃指定日期的早、中、晚餐。系統會自動列出目前冰箱內**最快到期、需優先消耗的食材**供您參考！")
+    st.subheader(f"🍽️ 三餐與早餐規劃 ({selected_fridge_name})")
+    
+    plan_tab_1, plan_tab_2, plan_tab_3 = st.tabs(["📝 每日規劃新增", "📅 每周規劃表", "🗓️ 每月規劃總覽"])
     
     con = get_db()
     cur = con.cursor()
     
-    # 取得目前冰箱優先到期食材
-    cur.execute("SELECT name, quantity, unit, expiry_date, location FROM foods WHERE fridge_id = ? AND quantity > 0 ORDER BY expiry_date ASC LIMIT 8", (current_fridge_id,))
-    urgent_foods = cur.fetchall()
-    
-    if urgent_foods:
-        st.markdown("##### 🚨 冰箱優先消耗食材推薦")
-        cols = st.columns(min(len(urgent_foods), 4))
-        for idx, uf in enumerate(urgent_foods):
-            with cols[idx % 4]:
-                st.markdown(f"**{uf['name']}**")
-                st.caption(f"剩 {uf['quantity']:g} {uf['unit']}\n效期: {uf['expiry_date']}")
-    
-    st.divider()
-    
-    # 規劃表單
-    selected_plan_date = st.date_input("選擇規劃日期", value=date.today())
-    
-    with st.form("meal_plan_form"):
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            p_meal_type = st.selectbox("餐別", ["早餐", "午餐", "晚餐"])
-        with col_p2:
-            p_dish = st.text_input("預定菜色 / 規劃內容", placeholder="例如：番茄炒蛋配糙米飯")
+    # --- 規劃子分頁 1：每日單日新增與當日清單 ---
+    with plan_tab_1:
+        st.info("在這裡您可以新增指定日期的早、中、晚餐。下方亦會提示目前冰箱內需優先消耗的食材！")
         
-        p_note = st.text_input("備註說明（選填）", placeholder="例如：使用快到期的番茄")
+        # 取得優先到期食材
+        cur.execute("SELECT name, quantity, unit, expiry_date, location FROM foods WHERE fridge_id = ? AND quantity > 0 ORDER BY expiry_date ASC LIMIT 6", (current_fridge_id,))
+        urgent_foods = cur.fetchall()
         
-        plan_submitted = st.form_submit_button("儲存三餐規劃", type="primary")
-        if plan_submitted:
-            if not p_dish.strip():
-                st.warning("請輸入預定菜色！")
-            else:
-                cur.execute("""
-                    INSERT INTO meal_plans (fridge_id, plan_date, meal_type, dish_name, note)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (current_fridge_id, selected_plan_date.isoformat(), p_meal_type, p_dish.strip(), p_note.strip()))
-                con.commit()
-                st.success(f"✅ 成功新增 {selected_plan_date} 的【{p_meal_type}】規劃！")
-                st.rerun()
-
-    st.divider()
-    st.markdown(f"##### 📋 {selected_plan_date} 當日三餐清單")
-    
-    cur.execute("""
-        SELECT id, meal_type, dish_name, note 
-        FROM meal_plans 
-        WHERE fridge_id = ? AND plan_date = ? 
-        ORDER BY CASE meal_type WHEN '早餐' THEN 1 WHEN '午餐' THEN 2 ELSE 3 END
-    """, (current_fridge_id, selected_plan_date.isoformat()))
-    plans = cur.fetchall()
-    
-    if plans:
-        for p_id, m_type, d_name, note_txt in plans:
-            col_l1, col_l2, col_l3 = st.columns([1, 3, 1])
-            with col_l1:
-                st.markdown(f"**【{m_type}】**")
-            with col_l2:
-                st.markdown(f"🍽️ **{d_name}**" + (f" (備註: {note_txt})" if note_txt else ""))
-            with col_l3:
-                if st.button("🗑️ 刪除", key=f"del_plan_{p_id}"):
-                    cur.execute("DELETE FROM meal_plans WHERE id = ?", (p_id,))
+        if urgent_foods:
+            st.markdown("##### 🚨 冰箱優先消耗食材提示")
+            cols = st.columns(min(len(urgent_foods), 3))
+            for idx, uf in enumerate(urgent_foods):
+                with cols[idx % 3]:
+                    st.markdown(f"▪️ **{uf['name']}**")
+                    st.caption(f"剩 {uf['quantity']:g} {uf['unit']} (到期日: {uf['expiry_date']})")
+        
+        st.divider()
+        selected_plan_date = st.date_input("選擇規劃日期", value=date.today(), key="single_plan_date")
+        
+        with st.form("meal_plan_form"):
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                p_meal_type = st.selectbox("餐別", ["早餐", "午餐", "晚餐"])
+            with col_p2:
+                p_dish = st.text_input("預定菜色 / 規劃內容", placeholder="例如：無糖豆漿 + 水煮蛋")
+            
+            p_note = st.text_input("備註說明（選填）", placeholder="例如：使用快到期的雞蛋")
+            
+            plan_submitted = st.form_submit_button("儲存餐點規劃", type="primary")
+            if plan_submitted:
+                if not p_dish.strip():
+                    st.warning("請輸入預定菜色！")
+                else:
+                    cur.execute("""
+                        INSERT INTO meal_plans (fridge_id, plan_date, meal_type, dish_name, note)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (current_fridge_id, selected_plan_date.isoformat(), p_meal_type, p_dish.strip(), p_note.strip()))
                     con.commit()
-                    st.success("已刪除此餐點規劃！")
+                    st.success(f"✅ 成功新增 {selected_plan_date} 的【{p_meal_type}】規劃！")
                     st.rerun()
-    else:
-        st.info(f"📅 {selected_plan_date} 目前尚無三餐規劃，請透過上方表單新增。")
+
+        st.divider()
+        st.markdown(f"##### 📋 {selected_plan_date} 當日餐點清單")
         
+        cur.execute("""
+            SELECT id, meal_type, dish_name, note 
+            FROM meal_plans 
+            WHERE fridge_id = ? AND plan_date = ? 
+            ORDER BY CASE meal_type WHEN '早餐' THEN 1 WHEN '午餐' THEN 2 ELSE 3 END
+        """, (current_fridge_id, selected_plan_date.isoformat()))
+        plans = cur.fetchall()
+        
+        if plans:
+            for p_id, m_type, d_name, note_txt in plans:
+                col_l1, col_l2, col_l3 = st.columns([1, 3, 1])
+                with col_l1:
+                    st.markdown(f"**【{m_type}】**")
+                with col_l2:
+                    st.markdown(f"🍽️ **{d_name}**" + (f" (備註: {note_txt})" if note_txt else ""))
+                with col_l3:
+                    if st.button("🗑️ 刪除", key=f"del_plan_{p_id}"):
+                        cur.execute("DELETE FROM meal_plans WHERE id = ?", (p_id,))
+                        con.commit()
+                        st.success("已刪除此餐點規劃！")
+                        st.rerun()
+        else:
+            st.info(f"📅 {selected_plan_date} 目前尚無餐點規劃，請透過上方表單新增。")
+
+    # --- 規劃子分頁 2：每周規劃表（特化早餐檢視選項） ---
+    with plan_tab_2:
+        st.markdown("##### 📅 週菜單與早餐總覽表")
+        week_ref_date = st.date_input("選擇基準日期（系統將自動計算整週）", value=date.today(), key="week_ref_date")
+        
+        # 計算當週的週一與週日
+        start_of_week = week_ref_date - timedelta(days=week_ref_date.weekday())
+        end_of_week = start_of_week + timedelta(days=6)
+        
+        st.caption(f"🗓️ 當前檢視區間：**{start_of_week.isoformat()} (週一) ～ {end_of_week.isoformat()} (週日)**")
+        
+        view_filter = st.radio("檢視模式", ["全部三餐", "僅看早餐 ☀️"], horizontal=True)
+        
+        cur.execute("""
+            SELECT plan_date, meal_type, dish_name, note
+            FROM meal_plans
+            WHERE fridge_id = ? AND plan_date BETWEEN ? AND ?
+            ORDER BY plan_date ASC, CASE meal_type WHEN '早餐' THEN 1 WHEN '午餐' THEN 2 ELSE 3 END
+        """, (current_fridge_id, start_of_week.isoformat(), end_of_week.isoformat()))
+        week_data = cur.fetchall()
+        
+        # 整理一週資料
+        week_dict = {}
+        for i in range(7):
+            d_str = (start_of_week + timedelta(days=i)).isoformat()
+            week_dict[d_str] = []
+            
+        for row in week_data:
+            week_dict[row["plan_date"]].append(row)
+            
+        weekday_names = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+        
+        for i in range(7):
+            curr_d = start_of_week + timedelta(days=i)
+            curr_d_str = curr_d.isoformat()
+            items = week_dict[curr_d_str]
+            
+            with st.expander(f"📆 {curr_d_str} ({weekday_names[i]}) — 共 {len(items)} 項規劃"):
+                if items:
+                    for it in items:
+                        if view_filter == "僅看早餐 ☀️" and it["meal_type"] != "早餐":
+                            continue
+                        st.markdown(f"- **【{it['meal_type']}】** {it['dish_name']}" + (f" （_{it['note']}_）" if it['note'] else ""))
+                else:
+                    st.caption("尚無規劃餐點")
+
+    # --- 規劃子分頁 3：每月規劃總覽月曆觀點 ---
+    with plan_tab_3:
+        st.markdown("##### 🗓️ 月度三餐與早餐統計總覽")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            sel_year = st.number_input("年份", min_value=2024, max_value=2030, value=date.today().year)
+        with col_m2:
+            sel_month = st.number_input("月份", min_value=1, max_value=12, value=date.today().month)
+            
+        m_start = date(sel_year, sel_month, 1).isoformat()
+        _, last_day = calendar.monthrange(sel_year, sel_month)
+        m_end = date(sel_year, sel_month, last_day).isoformat()
+        
+        cur.execute("""
+            SELECT plan_date, meal_type, dish_name
+            FROM meal_plans
+            WHERE fridge_id = ? AND plan_date BETWEEN ? AND ?
+            ORDER BY plan_date ASC
+        """, (current_fridge_id, m_start, m_end))
+        month_rows = cur.fetchall()
+        
+        if month_rows:
+            st.success(f"📊 {sel_year} 年 {sel_month} 月份共有 **{len(month_rows)}** 筆餐點規劃")
+            
+            # 統計該月早餐數量
+            bf_count = sum(1 for r in month_rows if r['meal_type'] == '早餐')
+            st.write(f"☀️ 其中早餐總計：**{bf_count}** 次")
+            
+            # 按日期分類展示
+            m_dict = {}
+            for r in month_rows:
+                p_date = r['plan_date']
+                if p_date not in m_dict:
+                    m_dict[p_date] = []
+                m_dict[p_date].append(f"【{r['meal_type']}】{r['dish_name']}")
+                
+            for d_key in sorted(m_dict.keys()):
+                st.markdown(f"**📌 {d_key}**")
+                for d_dish in m_dict[d_key]:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;▪️ {d_dish}")
+        else:
+            st.info(f"📅 {sel_year} 年 {sel_month} 月份目前尚無任何餐點規劃。")
+            
     con.close()
 
 # --- 標籤五：採買清單 ---
